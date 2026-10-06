@@ -80,10 +80,17 @@ At the `folio>` prompt:
 ```sh
 folio search --ext pdf --year 2015-2020 -n 5 deep learning goodfellow
 folio search --articles --json attention is all you need
+folio search --json 10.1007/978-3-540-75183-0_13
+folio search --json https://doi.org/10.1007/978-3-540-75183-0_13
 folio get 18e1b007a1dab45b30cc861ba2dfda25 -o papers
 ```
 
 `search` takes `-n N` (default 20), `--ext pdf,epub`, `--year 2017` or a range like `2015-2020`, `--lang English`, and `--articles` or `--books`; `--json` prints an array of `md5`, `title`, `author`, `year`, `lang`, `size`, `ext` and `article`. It exits 1 when nothing matches. `get` takes several md5s, prints one saved path per line on stdout, keeps progress on stderr, and exits 1 if any download failed.
+
+DOIs work in both `search` and the interactive prompt: use the bare identifier,
+`doi:10.…`, or a `doi.org/10.…` link with or without `http://` or `https://`.
+Legacy `dx.doi.org` links work too. Results include only downloadable files;
+LibGen may know a DOI's metadata without having its file.
 
 [`skills/folio/SKILL.md`](skills/folio/SKILL.md) teaches Claude Code and other agents to use it. Install it with
 
@@ -139,7 +146,8 @@ Downloads are named `[year]-[author]-[title]` in lowercase with ASCII-only words
 ## Limits
 
 - Search only covers what LibGen indexes. Files that only Anna's Archive holds need their md5, for `folio get`.
-- LibGen matches titles, authors and ISBNs, not DOIs, and often files arXiv papers as books, so `--articles` can miss them.
+- LibGen matches titles, authors, ISBNs and DOIs, and often files arXiv papers as books, so `--articles` can miss them.
+- Sci-Hub is not queried directly; DOI searches use LibGen's index.
 - Anna's Archive record JSON is members-only for most files, so without `AA_KEY` the `info` and `torrent` commands show less.
 - The md5 check catches broken and substituted downloads. It cannot catch a hostile mirror, because the md5 comes from the same server as the file.
 - Sites change their HTML. If search suddenly returns nothing, run `folio selftest` and open an issue.

@@ -1,6 +1,6 @@
 ---
 name: folio
-description: Find and download a book or paper with the folio CLI (LibGen search, downloads via Anna's Archive, LibGen and IPFS). Use when the user asks to find, fetch, download or get a PDF/EPUB of a specific book or paper by title, author or ISBN.
+description: Find and download a book or paper with the folio CLI (LibGen search, downloads via Anna's Archive, LibGen and IPFS). Use when the user asks to find, fetch, download or get a PDF/EPUB of a specific book or paper by title, author, ISBN or DOI.
 ---
 
 # folio
@@ -22,6 +22,11 @@ point to that instead.
    folio search --json -n 10 attention is all you need vaswani
    ```
 
+   Or pass a DOI directly, bare or as a `doi.org/…` URL with or without
+   `http://` or `https://`: `folio search --json 10.1007/978-3-540-75183-0_13`.
+   `doi:` and legacy `dx.doi.org` prefixes also work. A DOI can have metadata
+   in LibGen without a downloadable file, in which case no result is returned.
+
    Each result has `md5`, `title`, `author`, `year`, `lang`, `size`, `ext` and
    `article`. Exit code 1 means no results: drop words (subtitle, edition,
    punctuation) and retry before giving up.
@@ -29,7 +34,7 @@ point to that instead.
 2. Narrow with flags instead of reading long lists: `--ext pdf,epub`,
    `--year 2017` or `--year 2015-2020`, `--lang English`, `--books` or
    `--articles`. LibGen often files arXiv papers as books, so do not use
-   `--articles` for them. It does not search DOIs; use the title.
+   `--articles` for them. Sci-Hub is not queried directly.
 
 3. Pick one result. Match title and author first. Unless the user said
    otherwise, prefer the format they asked for (PDF for papers, EPUB or PDF for

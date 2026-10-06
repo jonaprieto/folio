@@ -4,7 +4,8 @@
   folio [query...]          interactive: search, pick by number, download; at the prompt,
                             m pages through results, any text is a new search
                             (/text forces a search, e.g. /1984)
-  folio search <query...>   LibGen search -> md5 list; filters: -n N, --ext pdf,epub,
+  folio search <query...>   title, author, ISBN or DOI (bare or URL) -> md5 list;
+                            filters: -n N, --ext pdf,epub,
                             --year 2015-2020, --lang English, --articles | --books;
                             --json for machine output; exits 1 on no results
   folio info <md5>          Anna's Archive record summary
@@ -215,9 +216,20 @@ def download(url, outdir, md5, name):
             os.remove(tmp)
 
 
+def normalize_query(query):
+    """DOI resolver URL or doi: identifier -> bare DOI; leave other searches alone."""
+    candidate = re.sub(r"^doi:\s*", "", query.strip(), flags=re.I)
+    resolver = re.match(r"^(?:https?://|//)?(?:dx\.)?doi\.org/", candidate, re.I)
+    if resolver:
+        candidate = candidate[resolver.end():].split("?", 1)[0].split("#", 1)[0]
+    candidate = urllib.parse.unquote(candidate)
+    return candidate if re.fullmatch(r"10\.\d{4,9}/\S+", candidate) else query
+
+
 def search(args, page=1):
     """One LibGen page -> (rows, more): more is False once a page comes back short."""
-    html_ = lg_text(f"/index.php?req={urllib.parse.quote_plus(' '.join(args))}&res=100&page={page}")
+    query = normalize_query(' '.join(args))
+    html_ = lg_text(f"/index.php?req={urllib.parse.quote_plus(query)}&res=100&page={page}")
     rows = parse_libgen(html_)
     return rows, len(set(re.findall(r"md5=([0-9a-fA-F]{32})", html_))) >= 100
 
@@ -234,7 +246,7 @@ def wanted(r, o):
 
 
 def cmd_search(args):
-    ap = argparse.ArgumentParser(prog="folio search", description="Search LibGen; one result per line, or JSON.")
+    ap = argparse.ArgumentParser(prog="folio search", description="Search LibGen by title, author, ISBN or DOI (bare or URL); one result per line, or JSON.")
     ap.add_argument("query", nargs="+")
     ap.add_argument("-n", type=int, default=20, help="max results (default 20)")
     ap.add_argument("--ext", help="formats, comma-separated: pdf,epub")
@@ -437,7 +449,7 @@ def classify(line, n):
     if re.fullmatch(r"[\d,\s-]+", low) and not re.search(r"\d{7}", low):  # digits/ranges download
         picks = parse_picks(low, n)
         return ("get", picks) if picks else ("bad", f"pick 1-{n}, or /{cmd} to search for it" if n else f"/{cmd} to search for it")
-    if cmd.startswith("/"):
+    if cmd.startswith("/") and not cmd.startswith("//"):
         cmd = cmd[1:].strip()
     return ("search", cmd) if cmd else ("bad", "empty search")
 
@@ -493,7 +505,7 @@ def interactive(query):
     if " ".join(query).strip():
         new_search(" ".join(query))
     else:
-        print("  type a title, author or ISBN to search, q to quit")
+        print("  type a title, author, ISBN or DOI to search, q to quit")
     while True:
         try:
             line = input(c("folio> ", "1;35") if COLOR else "folio> ")
@@ -569,6 +581,24 @@ def selftest():
     [r] = parse_libgen(row)
     assert r == dict(md5="8336332bf5877e3adbfb60ac70720cd5", title="A Book", author="Ann",
                      year="2008", lang="English", size="4 MB", ext="pdf", article=False), r
+    from unittest.mock import patch
+    doi = "10.1007/978-3-540-75183-0_13"
+    variants = [doi, "doi:" + doi, "DOI: " + doi, "doi.org/" + doi,
+                "https://doi.org/" + doi, "http://doi.org/" + doi,
+                "dx.doi.org/" + doi, "https://dx.doi.org/" + doi,
+                "//doi.org/" + doi, "HTTPS://DOI.ORG/" + doi,
+                "https://doi.org/" + doi.replace("/", "%2F") + "?source=test#page=2"]
+    with patch.dict(search.__globals__, lg_text=lambda path: requests.append(path) or row):
+        for query in variants:
+            requests = []
+            assert normalize_query(" " + query + " ") == doi, query
+            assert classify(query, 5) == ("search", query), query
+            assert search(query.split(), 2) == ([r], False), query
+            assert requests == [f"/index.php?req={urllib.parse.quote_plus(doi)}&res=100&page=2"], requests
+    for query in ("deep learning", "9780262046305", "10.123/no", "10.1234/", "10.1234/two words",
+                  "https://example.org/" + doi, "doi.org/not-a-doi", "100% organic"):
+        assert normalize_query(query) == query, query
+    assert normalize_query("10.1234/a(b);c:1") == "10.1234/a(b);c:1"
     dup = row.replace("</table>", row.split("<table id=\"tablelibgen\">")[1].replace("8336", "9336"))
     assert len(parse_libgen(dup)) == 1, "same title/format/size collapses"
     t = row.replace("A Book", "Algo || Algo || Math").replace("<td>Ann", "<td>Ann (Author) ; [...] ; Bo (author)")
