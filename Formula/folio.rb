@@ -3,8 +3,8 @@ class Folio < Formula
 
   desc "Find and download books and papers from the terminal or an AI agent"
   homepage "https://github.com/jonaprieto/folio"
-  url "https://github.com/jonaprieto/folio/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "269fd03aef46f9b61afb7d5e9f825785cde9dff759280b0109871d131b0479ff"
+  url "https://github.com/jonaprieto/folio/archive/refs/tags/v0.3.0.tar.gz"
+  sha256 "8f51bcb89a55487da745a86ff94b43e1812779d3f3682878916ec648d98a9b43"
   license "MIT"
   head "https://github.com/jonaprieto/folio.git", branch: "main"
 
