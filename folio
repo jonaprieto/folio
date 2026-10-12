@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""folio: search LibGen, download by md5 via Anna's Archive record data.
+"""folio: search LibGen, download by md5 via Anna's Archive record data;
+open-access papers come straight from their publisher or arXiv.
 
   folio [query...]          interactive: search, pick by number, download; at the prompt,
                             m pages through results, any text is a new search
                             (/text forces a search, e.g. /1984)
   folio search <query...>   title, author, ISBN or DOI (bare or URL) -> md5 list;
+                            a DOI, arXiv id or link to a paper's page also lists its
+                            open-access PDF first, when the page offers one;
                             filters: -n N, --ext pdf,epub,
                             --year 2015-2020, --lang English, --articles | --books;
                             --json for machine output; exits 1 on no results
@@ -12,6 +15,9 @@
   folio get <md5>... [-o DIR]
                             download (AA member API if AA_KEY set, then LibGen, then IPFS);
                             prints each saved path, exits 1 if any failed
+  folio get <doi|arxiv|link>... [-o DIR]
+                            download the open-access PDF: 10.4230/LIPIcs.ECOOP.2023.9,
+                            arXiv:1706.03762, https://drops.dagstuhl.de/entities/document/...
   folio torrent <md5>       magnet + file path inside torrent
 
 Files are renamed like papershelf's Reference preset, [year]-[author:surname]-[title:truncate40]
@@ -33,8 +39,15 @@ MIRRORS = list(dict.fromkeys([os.environ.get("LG_DOMAIN", "libgen.li"),
                               "libgen.li", "libgen.bz", "libgen.gl", "libgen.vg", "libgen.la"]))
 LG = "https://" + MIRRORS[0]  # the last mirror that answered
 UA = {"User-Agent": "Mozilla/5.0"}
+# Publishers get an honest name: Zenodo and eLife turn away a bare "Mozilla/5.0" but serve this.
+OA_UA = {"User-Agent": "folio (+https://github.com/jonaprieto/folio)"}
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 EXT_COLOR = dict(pdf="44", epub="42", mobi="43", azw3="43", djvu="45", fb2="46")  # bg; red stays for errors
+DOI = re.compile(r"10\.\d{4,9}/\S+")
+# arXiv:1706.03762, arxiv.org/abs/... or /pdf/..., old ids like hep-th/9901001; a bare new-style id too
+ARXIV = re.compile(r"(?:(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/|arxiv:\s*)"
+                   r"([a-z-]+(?:\.[a-z]{2})?/\d{7}(?:v\d+)?|\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?"
+                   r"|(\d{4}\.\d{4,5}(?:v\d+)?)", re.I)
 OUTDIR = os.path.expanduser(os.environ.get("FOLIO_DIR", "~/Downloads"))
 NAME = os.environ.get("FOLIO_NAME", "[year]-[author]-[title]")
 
@@ -50,8 +63,8 @@ GOOD_GATEWAYS = ["ipfs.orbitor.dev", "snapshot.4everland.link", "ipfs.raribleuse
                  "ipfs.filebase.io", "magic.decentralized-content.com"]
 
 
-def fetch(url, timeout=30):
-    return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout)
+def fetch(url, timeout=30, headers=UA):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
 
 
 def text(url):
@@ -190,13 +203,18 @@ def sources(md5, rec):
 
 
 def download(url, outdir, md5, name):
-    """Stream to outdir; keep it only if the md5 matches (gateways happily serve HTML with 200/206)."""
-    h, tmp = hashlib.md5(), os.path.join(outdir, md5 + ".part")
+    """Stream to outdir; keep it only if the md5 matches (gateways happily serve HTML with 200/206).
+
+    md5 None is an open-access PDF: nothing to match, so it must at least start like a PDF.
+    """
+    h, head = hashlib.md5(), b""
+    tmp = os.path.join(outdir, (md5 or hashlib.md5(url.encode()).hexdigest()) + ".part")
     try:
-        with fetch(url, timeout=60) as r, open(tmp, "wb") as f:
+        with fetch(url, 60, UA if md5 else OA_UA) as r, open(tmp, "wb") as f:
             cd = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", r.headers.get("Content-Disposition", ""))
             size, done = int(r.headers.get("Content-Length") or 0), 0
             while chunk := r.read(1 << 16):
+                head = head or chunk[:1024]
                 h.update(chunk)
                 f.write(chunk)
                 done += len(chunk)
@@ -205,10 +223,11 @@ def download(url, outdir, md5, name):
                     print(f"\r  {done >> 20} MB {pct}   ", end="", file=sys.stderr)
         if sys.stderr.isatty():
             print(file=sys.stderr)
-        if h.hexdigest() != md5:
+        digest = h.hexdigest()
+        if digest != md5 if md5 else b"%PDF" not in head:
             return None
-        name = name or (urllib.parse.unquote(cd.group(1)) if cd else md5 + ".bin")
-        path = free_path(outdir, safe_name(name, md5), md5)
+        name = name or (urllib.parse.unquote(cd.group(1)) if cd else digest + (".bin" if md5 else ".pdf"))
+        path = free_path(outdir, safe_name(name, digest), digest)
         os.replace(tmp, path)
         return path
     finally:
@@ -223,15 +242,77 @@ def normalize_query(query):
     if resolver:
         candidate = candidate[resolver.end():].split("?", 1)[0].split("#", 1)[0]
     candidate = urllib.parse.unquote(candidate)
-    return candidate if re.fullmatch(r"10\.\d{4,9}/\S+", candidate) else query
+    return candidate if DOI.fullmatch(candidate) else query
+
+
+def oa_landing(query):
+    """DOI, arXiv id or link -> the page that may offer an open-access PDF, else None."""
+    q = normalize_query(query).strip()
+    if m := ARXIV.fullmatch(q):
+        return "https://arxiv.org/abs/" + (m.group(1) or m.group(2))
+    if DOI.fullmatch(q):
+        return "https://doi.org/" + urllib.parse.quote(q)
+    return q if re.fullmatch(r"https?://\S+", q, re.I) else None
+
+
+def open_access(query):
+    """Result row for a DOI, arXiv id or link whose page offers a free PDF, else None.
+
+    Open-access publishers (DROPS, arXiv, ...) name the PDF in a citation_pdf_url meta tag,
+    Google Scholar's convention, or in a <link type="application/pdf"> (Zenodo). Paywalled ones may too, so the row is returned only when
+    that URL really serves a PDF.
+    """
+    page = oa_landing(query)
+    if not page:
+        return None
+    try:
+        with fetch(page, 15, OA_UA) as r:
+            base, direct = r.geturl(), r.headers.get_content_type() == "application/pdf"
+            body = "" if direct else r.read(2 << 20).decode("utf-8", "replace")
+        meta = {}
+        for tag in re.findall(r"<meta\b[^>]*>", body, re.I):
+            k = re.search(r"""\bname=["']?(citation_\w+)""", tag, re.I)
+            v = re.search(r"""\bcontent=(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", tag, re.I)  # ACL leaves quotes off
+            if k and v:
+                meta.setdefault(k.group(1).lower(), []).append(safe(html.unescape(next(filter(None, v.groups()), ""))).strip())
+        for tag in re.findall(r"<link\b[^>]*>", body, re.I):  # Zenodo's way: <link rel="item" type="application/pdf">
+            href = re.search(r"""\bhref=["']([^"']+)""", tag, re.I)
+            if href and re.search(r"""\brel=["']?(?:item|alternate)\b""", tag, re.I) and "application/pdf" in tag.lower():
+                meta.setdefault("citation_pdf_url", []).append(html.unescape(href.group(1)))
+        url = base if direct else urllib.parse.urljoin(base, (meta.get("citation_pdf_url") or [""])[0])
+        if not (direct or meta.get("citation_pdf_url")) or not re.match(r"https?://", url, re.I):
+            return None
+        with fetch(url, 15, OA_UA) as r:
+            if b"%PDF" not in r.read(1024):
+                return None
+            size = int(r.headers.get("Content-Length") or 0)
+    except Exception as e:
+        return err(f"  no open-access PDF from {urllib.parse.urlsplit(page).netloc}: {e}")
+    date = " ".join(meta.get(k, [""])[0] for k in ("citation_date", "citation_publication_date", "citation_online_date"))
+    title = (meta.get("citation_title") or [urllib.parse.unquote(os.path.basename(urllib.parse.urlsplit(url).path))])[0]
+    return dict(md5="", title=title[:200], author="; ".join(a[:60] for a in meta.get("citation_author", [])[:10]),
+                year=(re.search(r"\d{4}", date) or [""])[0], lang="",
+                size=f"{size >> 20} MB" if size >> 20 else f"{size >> 10} kB" if size else "",
+                ext="pdf", article=True, url=url, page=page)
 
 
 def search(args, page=1):
-    """One LibGen page -> (rows, more): more is False once a page comes back short."""
+    """One LibGen page -> (rows, more): more is False once a page comes back short.
+
+    A DOI, arXiv id or link also gets its open-access PDF, as the first row of page 1.
+    """
     query = normalize_query(' '.join(args))
-    html_ = lg_text(f"/index.php?req={urllib.parse.quote_plus(query)}&res=100&page={page}")
+    oa = [r for r in [open_access(query)] if r] if page == 1 else []
+    if oa_landing(query) and not DOI.fullmatch(query):
+        return oa, False  # an arXiv id or a link: nothing LibGen can match
+    try:
+        html_ = lg_text(f"/index.php?req={urllib.parse.quote_plus(query)}&res=100&page={page}")
+    except OSError:
+        if not oa:
+            raise
+        return oa, False  # LibGen is down but the paper is open access anyway
     rows = parse_libgen(html_)
-    return rows, len(set(re.findall(r"md5=([0-9a-fA-F]{32})", html_))) >= 100
+    return oa + rows, len(set(re.findall(r"md5=([0-9a-fA-F]{32})", html_))) >= 100
 
 
 def wanted(r, o):
@@ -246,7 +327,8 @@ def wanted(r, o):
 
 
 def cmd_search(args):
-    ap = argparse.ArgumentParser(prog="folio search", description="Search LibGen by title, author, ISBN or DOI (bare or URL); one result per line, or JSON.")
+    ap = argparse.ArgumentParser(prog="folio search", description="Search LibGen by title, author, ISBN or DOI (bare or URL); one result per line, or JSON. "
+                                 "A DOI, arXiv id or link also lists its open-access PDF first: pass that row's link to folio get.")
     ap.add_argument("query", nargs="+")
     ap.add_argument("-n", type=int, default=20, help="max results (default 20)")
     ap.add_argument("--ext", help="formats, comma-separated: pdf,epub")
@@ -273,7 +355,7 @@ def cmd_search(args):
     else:
         for r in found:
             kind = "article" if r["article"] else "book"
-            print(f"{r['md5']}  {r['ext']:5} {r['size']:>8}  {r['year'][:4]:4}  {kind:7}  {r['title']} / {r['author']}")
+            print(f"{r['md5'] or r['page']}  {r['ext']:5} {r['size']:>8}  {r['year'][:4]:4}  {kind:7}  {r['title']} / {r['author']}")
     if not found:
         err("no results")
         sys.exit(1)
@@ -366,19 +448,37 @@ def get_file(md5, outdir=OUTDIR, name=None):
     err(f"  all sources failed; try `folio torrent {md5}`", "31")
 
 
+def get_oa(r, outdir=OUTDIR):
+    """Download an open-access row from open_access()."""
+    name = None if NAME == "original" else nice_name(r["title"], r["author"], r["year"], "pdf")
+    err(f"  trying {urllib.parse.urlsplit(r['url']).netloc} ...")
+    try:
+        if path := download(r["url"], outdir, None, name):
+            return path
+        err("  not a PDF", "33")
+    except Exception as e:
+        err(f"  {e}", "33")
+
+
 def cmd_get(args):
-    ap = argparse.ArgumentParser(prog="folio get", description="Download files by md5; prints each saved path.")
-    ap.add_argument("md5", nargs="+")
+    ap = argparse.ArgumentParser(prog="folio get", description="Download files by md5, or open-access papers by DOI, arXiv id or link; prints each saved path.")
+    ap.add_argument("md5", nargs="+", metavar="id", help="md5 from search, or a DOI, arXiv id or link to an open-access paper")
     ap.add_argument("-o", metavar="DIR", default=OUTDIR, help=f"download folder (default {OUTDIR})")
     o = ap.parse_args(args)
-    bad = [m for m in o.md5 if not re.fullmatch(r"[0-9a-fA-F]{32}", m)]
+    is_md5 = lambda m: re.fullmatch(r"[0-9a-fA-F]{32}", m)
+    bad = [m for m in o.md5 if not is_md5(m) and not oa_landing(m)]
     if bad:
-        sys.exit(f"not an md5: {bad[0]!r}")
+        sys.exit(f"not an md5, DOI, arXiv id or link: {bad[0]!r}")
     if not os.path.isdir(o.o):
         sys.exit(f"no such directory: {o.o}")
     failed = 0
     for m in o.md5:
-        path = get_file(m.lower(), o.o)
+        if is_md5(m):
+            path = get_file(m.lower(), o.o)
+        elif r := open_access(m):
+            path = get_oa(r, o.o)
+        else:
+            path = err(f"  no open-access PDF for {m}; `folio search` looks for it in LibGen", "33")
         if path:
             print(path)
         failed += not path
@@ -415,7 +515,8 @@ def card(i, r, width):
     ext = c(f" {r['ext'].upper() or '?'} ", "30;" + EXT_COLOR.get(r["ext"], "47"))
     lang = r.get("lang", "") if r.get("lang", "") not in ("", "English") else ""
     meta = "  ".join(x for x in (r["size"], r["year"][:4] or "year ?", lang) if x)
-    lines.append(f"      {ext}  {c(meta, '90')}" + (c("  article", "33") if r["article"] else ""))
+    kind = c("  open access", "32") if r.get("url") else c("  article", "33") if r["article"] else ""
+    lines.append(f"      {ext}  {c(meta, '90')}{kind}")
     return "\n".join(lines)
 
 
@@ -467,10 +568,10 @@ def interactive(query):
 
     def show_more():
         nonlocal shown
+        kind = lambda r: "open access" if r.get("url") else "journal articles" if r["article"] else "books"
         for i in range(shown, min(shown + PAGE, len(rows))):
-            if i > 0 and rows[i]["article"] != rows[i - 1]["article"] or i == 0 and rows[i]["article"]:
-                kind = "journal articles" if rows[i]["article"] else "books"
-                print(c("\n  " + "\u2500" * 8 + f" {kind} " + "\u2500" * 8, "90"))
+            if kind(rows[i]) != (kind(rows[i - 1]) if i else "books"):
+                print(c("\n  " + "\u2500" * 8 + f" {kind(rows[i])} " + "\u2500" * 8, "90"))
             print("\n" + card(i + 1, rows[i], width))
         shown = min(shown + PAGE, len(rows))
         footer()
@@ -505,7 +606,7 @@ def interactive(query):
     if " ".join(query).strip():
         new_search(" ".join(query))
     else:
-        print("  type a title, author, ISBN or DOI to search, q to quit")
+        print("  type a title, author, ISBN, DOI or arXiv id to search, q to quit")
     while True:
         try:
             line = input(c("folio> ", "1;35") if COLOR else "folio> ")
@@ -532,6 +633,10 @@ def interactive(query):
             elif action in ("info", "torrent"):
                 r = rows[arg - 1]
                 try:
+                    if r.get("url"):
+                        print("  " + c(r["title"], "1") + "\n  " + c(r["author"], "36"))
+                        print(c(f"  open access, no md5 or torrent  {r['url']}", "90"))
+                        continue
                     if action == "info" and not record(r["md5"]):
                         print("  " + c(r["title"], "1") + "\n  " + c(r["author"], "36"))
                         print(c("  " + "  ".join(x for x in (r["ext"], r["size"], r["year"], r["lang"]) if x), "90"))
@@ -550,7 +655,7 @@ def interactive(query):
                           c(f"  {r['ext']}, {r['size']}", "2"))
                     try:
                         name = None if NAME == "original" else nice_name(r["title"], r["author"], r["year"], r["ext"])
-                        path = get_file(r["md5"], name=name)
+                        path = get_oa(r) if r.get("url") else get_file(r["md5"], name=name)
                     except Exception as e:
                         path = err(f"  failed: {e}", "31")
                     if path:
@@ -599,6 +704,60 @@ def selftest():
                   "https://example.org/" + doi, "doi.org/not-a-doi", "100% organic"):
         assert normalize_query(query) == query, query
     assert normalize_query("10.1234/a(b);c:1") == "10.1234/a(b);c:1"
+    abs_ = "https://arxiv.org/abs/"
+    for query in ("1706.03762", "arXiv:1706.03762", "arxiv: 1706.03762", "arxiv.org/abs/1706.03762",
+                  "https://arxiv.org/pdf/1706.03762", "https://www.arxiv.org/pdf/1706.03762.pdf"):
+        assert oa_landing(query) == abs_ + "1706.03762", query
+    assert oa_landing("arXiv:1706.03762v7") == abs_ + "1706.03762v7"
+    assert oa_landing("arXiv:hep-th/9901001") == abs_ + "hep-th/9901001" and oa_landing("math.GT/0309136") is None
+    assert oa_landing("https://doi.org/" + doi) == oa_landing(doi) == "https://doi.org/10.1007/978-3-540-75183-0_13"
+    assert oa_landing("https://drops.dagstuhl.de/x") == "https://drops.dagstuhl.de/x"
+    for query in ("deep learning", "9780262046305", "1984", "file:///etc/passwd", "ftp://x/y.pdf", "see https://x.org"):
+        assert oa_landing(query) is None, query
+    import email.message, io, tempfile
+    from urllib.response import addinfourl
+
+    def web(pages):
+        def fake(url, timeout=30, headers=None):
+            final, kind, body = pages[url]
+            head = email.message.Message()
+            head["Content-Type"], head["Content-Length"] = kind, str(len(body))
+            return addinfourl(io.BytesIO(body), head, final)
+        return patch.dict(search.__globals__, fetch=fake)
+
+    drops, pdf = "https://drops.dagstuhl.de/entities/document/10.4230/X.9", b"%PDF-1.5 " + b"x" * 3000
+    landing = (b'<meta name="citation_title" content="VeriFx: Correct &amp; Replicated\x1b" >'
+               b'<meta name="citation_author" content="De Porre, Kevin" ><meta content=\'Ferreira, Carla\' name="citation_author">'
+               b'<meta name="citation_date" content="2023/07/11" ><meta content=/storage/X.9.pdf name=citation_pdf_url>')
+    site = {"https://doi.org/10.4230/X.9": (drops, "text/html", landing),
+            "https://drops.dagstuhl.de/storage/X.9.pdf": ("", "application/pdf", pdf)}
+    oa = dict(md5="", title="VeriFx: Correct & Replicated", author="De Porre, Kevin; Ferreira, Carla", year="2023",
+              lang="", size="2 kB", ext="pdf", article=True, url="https://drops.dagstuhl.de/storage/X.9.pdf",
+              page="https://doi.org/10.4230/X.9")
+    with web(site):
+        assert open_access("doi:10.4230/X.9") == oa, open_access("doi:10.4230/X.9")
+        assert open_access("deep learning") is None
+        with patch.dict(search.__globals__, lg_text=lambda path: row):
+            assert search(["10.4230/X.9"]) == ([oa, r], False) and search(["10.4230/X.9"], 2) == ([r], False)
+        with patch.dict(search.__globals__, lg_text=lambda path: (_ for _ in ()).throw(OSError("down"))):
+            assert search(["10.4230/X.9"]) == ([oa], False), "open access survives LibGen being down"
+        with tempfile.TemporaryDirectory() as d:
+            assert get_oa(oa, d) == os.path.join(d, "2023-de-porre-verifx-correct-replicated.pdf"), os.listdir(d)
+            assert get_oa(dict(oa, url="https://doi.org/10.4230/X.9"), d) is None and len(os.listdir(d)) == 1, "HTML is not kept"
+    with web({drops: (drops, "text/html", landing), "https://drops.dagstuhl.de/storage/X.9.pdf": ("", "text/html", b"<html>log in")}):
+        assert open_access(drops) is None, "a paywall page is not a PDF"
+    with web({drops: (drops, "text/html", landing.replace(b"/storage/X.9.pdf", b"file:///etc/passwd"))}):
+        assert open_access(drops) is None, "only http(s) PDF links are followed"
+    with web({drops: (drops, "text/html", b"<html>no meta")}):
+        assert open_access(drops) is None
+    zenodo = b'<meta name="citation_title" content="Z"><link rel="item" type="application/pdf" href="/storage/X.9.pdf">'
+    with web({drops: (drops, "text/html", zenodo), "https://drops.dagstuhl.de/storage/X.9.pdf": ("", "application/pdf", pdf)}):
+        assert open_access(drops)["url"] == oa["url"], "a link tag names the PDF when no meta tag does"
+    with web({abs_ + "1706.03762": (abs_ + "1706.03762", "application/pdf", pdf)}):
+        direct = open_access("arXiv:1706.03762")
+        assert (direct["url"], direct["title"]) == (abs_ + "1706.03762", "1706.03762"), direct
+        assert search(["arXiv:1706.03762"]) == ([direct], False), "an arXiv id never reaches LibGen"
+    assert "open access" in card(1, oa, 80) and "article" not in card(1, oa, 80)
     dup = row.replace("</table>", row.split("<table id=\"tablelibgen\">")[1].replace("8336", "9336"))
     assert len(parse_libgen(dup)) == 1, "same title/format/size collapses"
     t = row.replace("A Book", "Algo || Algo || Math").replace("<td>Ann", "<td>Ann (Author) ; [...] ; Bo (author)")
@@ -630,7 +789,7 @@ def selftest():
     assert safe("Evil \x1b]52;c;cGF3bmVk\x07 \x9b31m") == "Evil ]52;c;cGF3bmVk 31m"
     assert safe_name("../../.zshrc", m) == "zshrc" and safe_name("..", m) == m
     assert safe_name("a\\b\x1b.pdf", m) == "b.pdf" and len(safe_name("x" * 400 + ".pdf", m).encode()) <= 190
-    import tempfile, time
+    import time
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, "a.pdf"), "w").close()
         assert free_path(d, "a.pdf", m).endswith("a (5d41402a).pdf")

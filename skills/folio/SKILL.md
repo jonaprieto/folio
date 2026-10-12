@@ -1,18 +1,38 @@
 ---
 name: folio
-description: Find and download a book or paper with the folio CLI (LibGen search, downloads via Anna's Archive, LibGen and IPFS). Use when the user asks to find, fetch, download or get a PDF/EPUB of a specific book or paper by title, author, ISBN or DOI.
+description: Find and download a book or paper with the folio CLI (open-access PDFs straight from arXiv, DROPS and other publishers; otherwise LibGen search, downloads via Anna's Archive, LibGen and IPFS). Use when the user asks to find, fetch, download or get a PDF/EPUB of a specific book or paper by title, author, ISBN, DOI, arXiv id or link.
 ---
 
 # folio
 
-`folio` searches LibGen and downloads a file by md5, checking the md5 of what it
+`folio` downloads open-access papers from their publisher, and otherwise
+searches LibGen and downloads a file by md5, checking the md5 of what it
 saved. Only `search` and `get` are for agents; plain `folio <query>` opens an
 interactive prompt, so never run it without a subcommand.
 
 Anna's Archive and LibGen hold a lot of copyrighted material. Use folio for what
 the user has the right to access (public domain, openly licensed, copies they
 own). If a paper is openly available (arXiv, the publisher's open-access page),
-point to that instead.
+get it that way, as below.
+
+## Open access first
+
+With a DOI, an arXiv id or a link to the paper's page, try the publisher before
+any search:
+
+```sh
+folio get 10.4230/LIPIcs.ECOOP.2023.9 -o ~/papers
+folio get arXiv:1706.03762 -o ~/papers
+folio get https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2023.9
+```
+
+stdout is the saved path. Exit code 1 means the page offers no open PDF
+(paywalled, or the publisher blocks scripts): go on to the steps below. If you
+know the paper has an arXiv version, pass that id rather than the journal DOI.
+
+`folio search --json <doi>` also lists the open-access copy first: it has an
+empty `md5`, a `url` (the PDF) and a `page`, and `page` is what `folio get`
+takes.
 
 ## Steps
 
