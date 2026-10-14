@@ -80,8 +80,9 @@ takes.
 ## Notes
 
 - LibGen mirrors (`libgen.li`, `.bz`, `.gl`, `.vg`, `.la`) are tried in turn
-  automatically. If all fail, the sites are down or blocked; say so rather than
-  retrying in a loop.
+  automatically, then any newer domain open-slum.org reports up. If all fail,
+  the error ends with open-slum.org's status per domain: all `down` means LibGen
+  itself is out, so say so rather than retrying in a loop.
 - `folio info <md5>` and `folio torrent <md5>` need an Anna's Archive record,
   which is members-only (`AA_KEY`) for most files.
 - `folio --help` and `folio search --help` list every flag.

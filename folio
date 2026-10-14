@@ -23,6 +23,9 @@ open-access papers come straight from their publisher or arXiv.
 Files are renamed like papershelf's Reference preset, [year]-[author:surname]-[title:truncate40]
 (2022-cormen-introduction-to-algorithms-4.pdf), and opened after an interactive download.
 
+When no known LibGen mirror answers, folio asks open-slum.org (an uptime monitor) for newer
+domains, and puts its report in the error.
+
 Env:
   FOLIO_DIR     download folder (default ~/Downloads)
   FOLIO_NAME    filename pattern with [author] [year] [title]; "original" keeps the server's name
@@ -30,7 +33,7 @@ Env:
   AA_KEY        Anna's Archive member secret key
   AA_DOMAIN     default annas-archive.gl;  LG_DOMAIN  default libgen.li
 """
-import argparse, hashlib, html, json, os, re, shutil, subprocess, sys, textwrap, unicodedata
+import argparse, functools, hashlib, html, json, os, re, shutil, subprocess, sys, textwrap, unicodedata
 import urllib.error, urllib.parse, urllib.request
 
 AA = "https://" + os.environ.get("AA_DOMAIN", "annas-archive.gl")
@@ -38,6 +41,7 @@ AA = "https://" + os.environ.get("AA_DOMAIN", "annas-archive.gl")
 MIRRORS = list(dict.fromkeys([os.environ.get("LG_DOMAIN", "libgen.li"),
                               "libgen.li", "libgen.bz", "libgen.gl", "libgen.vg", "libgen.la"]))
 LG = "https://" + MIRRORS[0]  # the last mirror that answered
+SLUM = "https://open-slum.org/"  # shadow-library uptime monitor: asked only once every mirror above fails
 UA = {"User-Agent": "Mozilla/5.0"}
 # Publishers get an honest name: Zenodo and eLife turn away a bare "Mozilla/5.0" but serve this.
 OA_UA = {"User-Agent": "folio (+https://github.com/jonaprieto/folio)"}
@@ -71,9 +75,25 @@ def text(url):
     return fetch(url).read(8 << 20).decode("utf-8", "replace")  # cap: pages are ~100 KB
 
 
+@functools.lru_cache(None)
+def slum():
+    """{domain: status} for LibGen from open-slum.org, or {} when it does not answer."""
+    # ponytail: scrapes FlatMonitor's HTML (it has no JSON); a redesign there turns this into {}.
+    try:
+        card = text(SLUM).split('site-card-title">libgen</a>', 1)[1].split('class="site-card"', 1)[0]
+    except Exception:
+        return {}
+    return dict(m.groups() for li in card.split("domain-item-dense")[1:]
+                if (m := re.search(r'href="https://([\w-]+(?:\.[\w-]+)+)".*?status-badge compact (\w+)', li, re.S)))
+
+
 def mirrors():
-    """LibGen base URLs, the last one that answered first."""
-    return [LG] + [u for u in ("https://" + d for d in MIRRORS) if u != LG]
+    """LibGen base URLs, the last one that answered first; past those, the new domains open-slum.org
+    reports up, so a LibGen move needs no folio release. Lazy: the monitor is asked only when reached."""
+    known = [LG] + [u for u in ("https://" + d for d in MIRRORS) if u != LG]
+    yield from known
+    yield from ("https://" + d for d, s in slum().items()
+                if "https://" + d not in known and s in ("up", "protected", "degraded"))
 
 
 def lg_text(path):
@@ -87,7 +107,9 @@ def lg_text(path):
             continue
         LG = m
         return page
-    raise OSError(f"no LibGen mirror answered ({', '.join(MIRRORS)})")
+    status = ", ".join(f"{d} {s}" for d, s in slum().items())
+    raise OSError(f"no LibGen mirror answered ({', '.join(MIRRORS)})"
+                  + (f"; {SLUM[8:-1]} reports {status}" if status else ""))
 
 
 def safe(s):
@@ -809,9 +831,28 @@ def selftest():
     text = lambda url: (_ for _ in ()).throw(OSError("down")) if MIRRORS[0] in url else "page " + url
     try:
         assert lg_text("/x").startswith("page https://") and LG != "https://" + MIRRORS[0]
-        assert mirrors()[0] == LG and len(mirrors()) == len(MIRRORS), "working mirror goes first"
+        ms = list(mirrors())
+        assert ms[0] == LG and len(ms) == len(MIRRORS), "working mirror goes first"
+        item = '<li class="domain-item-dense"><a href="https://{}" class="domain-link">x</a><a class="status-badge compact {}">'
+        page = ('<a class="site-card-title">annas</a>' + item.format("annas-archive.gl", "up")
+                + '<div class="site-card"><a href="libgen.html" class="site-card-title">libgen</a>'
+                + item.format(MIRRORS[0], "down") + item.format("libgen.new", "up") + item.format("libgen.gone", "down")
+                + '<div class="site-card">' + item.format("z-lib.gl", "up"))
+        net = lambda ok: lambda url: page if url == SLUM else "page " + url if ok in url else (_ for _ in ()).throw(OSError("down"))
+        slum.cache_clear()
+        text, LG = net("libgen.new"), "https://" + MIRRORS[0]
+        assert slum() == {MIRRORS[0]: "down", "libgen.new": "up", "libgen.gone": "down"}, slum()
+        assert lg_text("/x") == "page https://libgen.new/x" and LG == "https://libgen.new", "open-slum finds a new domain"
+        assert "libgen.gone" not in "".join(mirrors()), "a domain open-slum reports down is not tried"
+        text, LG = net("nowhere"), "https://" + MIRRORS[0]
+        try:
+            lg_text("/x")
+            assert False, "every mirror is down"
+        except OSError as e:
+            assert "open-slum.org reports " + MIRRORS[0] + " down, libgen.new up" in str(e), e
     finally:
         text, LG = real, "https://" + MIRRORS[0]
+        slum.cache_clear()
     print("ok")
 
 

@@ -134,7 +134,7 @@ A DOI, an arXiv id or a link is tried at the publisher first; see [Open access](
 flowchart TD
     Q["folio search / folio query"] --> O{"DOI, arXiv id or link<br/>with an open PDF?"}
     O -- yes --> D["publisher's PDF<br/>kept if it is a PDF"] --> F
-    O -- no --> S["LibGen search<br/>libgen.li, then .bz .gl .vg .la"]
+    O -- no --> S["LibGen search<br/>libgen.li, then .bz .gl .vg .la,<br/>then new domains open-slum.org reports up"]
     S --> P["pick a result: its md5"]
     P --> M["metadata for the filename<br/>Anna's Archive record, else LibGen JSON"]
     M --> K{"AA_KEY set?"}
@@ -171,7 +171,7 @@ Downloads are named `[year]-[author]-[title]` in lowercase with ASCII-only words
 | `FOLIO_OPEN` | `1` | set to `0` to not open files after an interactive download |
 | `AA_KEY` | | Anna's Archive member secret key, for fast downloads |
 | `AA_DOMAIN` | `annas-archive.gl` | Anna's Archive domain, which moves from time to time |
-| `LG_DOMAIN` | `libgen.li` | LibGen mirror to try first; `libgen.li`, `.bz`, `.gl`, `.vg` and `.la` follow when it fails |
+| `LG_DOMAIN` | `libgen.li` | LibGen mirror to try first; `libgen.li`, `.bz`, `.gl`, `.vg` and `.la` follow when it fails, then any other domain [open-slum.org](https://open-slum.org) reports up |
 
 ## Limits
 
@@ -180,7 +180,7 @@ Downloads are named `[year]-[author]-[title]` in lowercase with ASCII-only words
 - Open access is found from the paper's own page only. A paywalled paper with a free copy elsewhere (a preprint, a repository) is not found by its DOI; pass the arXiv id or that copy's link. Publishers behind a browser challenge give nothing; see [Open access](#open-access).
 - Sci-Hub is not queried directly; DOI searches use LibGen's index.
 - Anna's Archive record JSON is members-only for most files, so without `AA_KEY` the `info` and `torrent` commands show less.
-- The md5 check catches broken and substituted downloads. It cannot catch a hostile mirror, because the md5 comes from the same server as the file.
+- The md5 check catches broken and substituted downloads. It cannot catch a hostile mirror, because the md5 comes from the same server as the file. A domain learned from open-slum.org gets the same trust as the built-in mirrors.
 - Sites change their HTML. If search suddenly returns nothing, run `folio selftest` and open an issue.
 
 ## Legal
@@ -195,6 +195,7 @@ Many files on these sites are under copyright, and downloading them may be illeg
 
 - [Anna's Archive](https://annas-archive.gl), which preserves books and papers from many collections and publishes its [code](https://software.annas-archive.gl/) and [data](https://annas-archive.gl/datasets) openly. If `folio` saves you time, consider [supporting it](https://annas-archive.gl/donate). A membership also gives you fast downloads through `AA_KEY`.
 - [Library Genesis](https://libgen.li) and its mirrors, which provide the search and most direct downloads.
+- [open-slum.org](https://open-slum.org), whose uptime monitor tells `folio` where LibGen went when its mirrors stop answering.
 - [arXiv](https://arxiv.org), [Dagstuhl's DROPS](https://drops.dagstuhl.de), [Zenodo](https://zenodo.org) and the other open-access publishers, which make papers free to read in the first place.
 - [Sci-Hub](https://en.wikipedia.org/wiki/Sci-Hub), whose papers Anna's Archive mirrors.
 - The public [IPFS](https://ipfs.tech) gateway operators.
