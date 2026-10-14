@@ -41,6 +41,8 @@ AA = "https://" + os.environ.get("AA_DOMAIN", "annas-archive.gl")
 MIRRORS = list(dict.fromkeys([os.environ.get("LG_DOMAIN", "libgen.li"),
                               "libgen.li", "libgen.bz", "libgen.gl", "libgen.vg", "libgen.la"]))
 LG = "https://" + MIRRORS[0]  # the last mirror that answered
+# ponytail: a mirror that hangs costs this much; raise it if healthy searches start timing out.
+LG_TIMEOUT = 15
 SLUM = "https://open-slum.org/"  # shadow-library uptime monitor: asked only once every mirror above fails
 UA = {"User-Agent": "Mozilla/5.0"}
 # Publishers get an honest name: Zenodo and eLife turn away a bare "Mozilla/5.0" but serve this.
@@ -71,8 +73,8 @@ def fetch(url, timeout=30, headers=UA):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
 
 
-def text(url):
-    return fetch(url).read(8 << 20).decode("utf-8", "replace")  # cap: pages are ~100 KB
+def text(url, timeout=30):
+    return fetch(url, timeout).read(8 << 20).decode("utf-8", "replace")  # cap: pages are ~100 KB
 
 
 @functools.lru_cache(None)
@@ -101,7 +103,7 @@ def lg_text(path):
     global LG
     for m in mirrors():
         try:
-            page = text(m + path)
+            page = text(m + path, LG_TIMEOUT)
         except Exception as e:
             err(f"  {m[8:]}: {e}", "33")
             continue
@@ -207,7 +209,7 @@ def sources(md5, rec):
             print(f"  aa-fast: {e}", file=sys.stderr)
     for m in mirrors():  # a mirror whose get.php fails falls through to the next
         try:
-            get = re.search(r'href="(get\.php\?md5=[^"]+)"', text(f"{m}/ads.php?md5={md5}"))
+            get = re.search(r'href="(get\.php\?md5=[^"]+)"', text(f"{m}/ads.php?md5={md5}", LG_TIMEOUT))
         except Exception as e:
             err(f"  {m[8:]}: {e}", "33")
             continue
@@ -828,7 +830,7 @@ def selftest():
     assert wanted(r, f(articles=True)) and not wanted(r, f(books=True))
     global text, LG
     real, LG = text, "https://" + MIRRORS[0]
-    text = lambda url: (_ for _ in ()).throw(OSError("down")) if MIRRORS[0] in url else "page " + url
+    text = lambda url, timeout=30: (_ for _ in ()).throw(OSError("down")) if MIRRORS[0] in url else "page " + url
     try:
         assert lg_text("/x").startswith("page https://") and LG != "https://" + MIRRORS[0]
         ms = list(mirrors())
@@ -838,7 +840,7 @@ def selftest():
                 + '<div class="site-card"><a href="libgen.html" class="site-card-title">libgen</a>'
                 + item.format(MIRRORS[0], "down") + item.format("libgen.new", "up") + item.format("libgen.gone", "down")
                 + '<div class="site-card">' + item.format("z-lib.gl", "up"))
-        net = lambda ok: lambda url: page if url == SLUM else "page " + url if ok in url else (_ for _ in ()).throw(OSError("down"))
+        net = lambda ok: lambda url, timeout=30: page if url == SLUM else "page " + url if ok in url else (_ for _ in ()).throw(OSError("down"))
         slum.cache_clear()
         text, LG = net("libgen.new"), "https://" + MIRRORS[0]
         assert slum() == {MIRRORS[0]: "down", "libgen.new": "up", "libgen.gone": "down"}, slum()
